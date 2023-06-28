@@ -1,11 +1,16 @@
+/* Linker script for the STM32F303VCT6 */
 MEMORY
 {
-  /* NOTE 1 K = 1 KiBi = 1024 bytes */
-  /* TODO Adjust these memory regions to match your device memory layout */
-  /* These values correspond to the LM3S6965, one of the few devices QEMU can emulate */
-  FLASH : ORIGIN = 0x08000000, LENGTH = 256K
-  RAM : ORIGIN = 0x20000000, LENGTH = 40K
+    FLASH : ORIGIN = 0x08000000, LENGTH = 256K
+
+    /* .bss, .data and the heap go in this region */
+    RAM : ORIGIN = 0x20000000, LENGTH = 40K
+
+    /* Core coupled (faster) RAM dedicated to hold the stack */
+    CCRAM : ORIGIN = 0x10000000, LENGTH = 8K
 }
+_stack_start = ORIGIN(CCRAM) + LENGTH(CCRAM);
+
 
 /* This is where the call stack will be allocated. */
 /* The stack is of the full descending type. */
