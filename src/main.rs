@@ -102,6 +102,7 @@ impl Discovery {
                 1 => self.breath_leds(),
                 2 => self.run_gyroscope(),
                 3 => self.run_accelerometer(),
+                4 => self.cycle_leds(),
                 _ => BOARD_MODE.store(0, Ordering::Relaxed),
             }
         }
@@ -157,6 +158,32 @@ impl Discovery {
         }
     }
 
+    fn cycle_leds(&mut self) {
+        for led in &mut self.leds {
+            led.off().unwrap();
+        }
+
+        let orig_mode = BOARD_MODE.load(Ordering::Relaxed);
+        let mut index = 0;
+        let directions = [
+            Direction::North,
+            Direction::NorthEast,
+            Direction::East,
+            Direction::SouthEast,
+            Direction::South,
+            Direction::SouthWest,
+            Direction::West,
+            Direction::NorthWest,
+            ];
+        while BOARD_MODE.load(Ordering::Relaxed) == orig_mode {
+            self.leds.for_direction(directions[index]).on().ok();
+            self.delay.delay_ms(1000);
+            self.leds.for_direction(directions[index]).off().ok();
+            index += 1;
+            index %= directions.len();
+        }
+    }
+    
     fn run_gyroscope(&mut self) {
         let orig_mode = BOARD_MODE.load(Ordering::Relaxed);
         let mut old_direction: Option<Direction> = None;
