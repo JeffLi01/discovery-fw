@@ -16,7 +16,10 @@ use cortex_m::Peripherals;
 use cortex_m_rt::entry;
 use cortex_m_semihosting::hprintln;
 use stm32f3::stm32f303::{interrupt, Interrupt, NVIC};
-use stm32f3_discovery::leds::{Direction as LedDirection, Leds};
+use stm32f3_discovery::accelerometer::Accelerometer;
+use stm32f3_discovery::accelerometer::vector::F32x3;
+use stm32f3_discovery::compass::Compass;
+use stm32f3_discovery::leds::{Direction, Leds};
 use stm32f3_discovery::stm32f3xx_hal::gpio::{Edge, Gpioa, Input, Pin, U};
 use stm32f3_discovery::stm32f3xx_hal::pac;
 use stm32f3_discovery::stm32f3xx_hal::prelude::*;
@@ -29,6 +32,7 @@ static PA0: Mutex<RefCell<Option<Pin<Gpioa, U<0>, Input>>>> = Mutex::new(RefCell
 struct Discovery {
     delay: Delay,
     leds: Leds,
+    compass: Compass,
 }
 
 impl Discovery {
@@ -67,7 +71,23 @@ impl Discovery {
 
         cortex_m::interrupt::free(|cs| PA0.borrow(cs).replace(Some(pa0)));
 
-        Discovery { delay, leds }
+        let mut gpiob = device_periph.GPIOB.split(&mut rcc.ahb);
+        let mut flash = device_periph.FLASH.constrain();
+        let clocks = rcc.cfgr.freeze(&mut flash.acr);
+    
+        let compass = Compass::new(
+            gpiob.pb6,
+            gpiob.pb7,
+            &mut gpiob.moder,
+            &mut gpiob.otyper,
+            &mut gpiob.afrl,
+            device_periph.I2C1,
+            clocks,
+            &mut rcc.apb1,
+        )
+        .unwrap();
+    
+        Discovery { delay, leds, compass }
     }
 
     fn mainloop(&mut self) -> ! {
@@ -78,8 +98,9 @@ impl Discovery {
             let mode = BOARD_MODE.load(Ordering::Relaxed);
             hprintln!("Mode {}", mode).unwrap();
             match mode {
-                0 => self.breath_led(LedDirection::North),
+                0 => self.breath_led(Direction::North),
                 1 => self.breath_leds(),
+                2 => self.run_gyroscope(),
                 _ => BOARD_MODE.store(0, Ordering::Relaxed),
             }
         }
@@ -112,7 +133,7 @@ impl Discovery {
         }
     }
 
-    fn breath_led(&mut self, direction: LedDirection) {
+    fn breath_led(&mut self, direction: Direction) {
         let orig_mode = BOARD_MODE.load(Ordering::Relaxed);
         let mut up = true;
         let mut idle = 0;
@@ -132,6 +153,55 @@ impl Discovery {
             } else if idle == 0 {
                 up = true;
             }
+        }
+    }
+
+    fn run_gyroscope(&mut self) {
+        let orig_mode = BOARD_MODE.load(Ordering::Relaxed);
+        let mut old_direction: Option<Direction> = None;
+    
+        while BOARD_MODE.load(Ordering::Relaxed) == orig_mode {
+            let f32x3 = self.compass.accel_norm().unwrap();
+            if let Some(direction) = old_direction {
+                self.leds.for_direction(direction).off().ok();
+            }
+            let direction = calculate_direction(f32x3);
+            old_direction = direction;
+            match direction {
+                Some(d) => {
+                    self.leds.for_direction(d).on().ok();
+                },
+                None => {},
+            }
+        }
+    }    
+}
+
+fn calculate_direction(f32x3: F32x3) -> Option<Direction> {
+    let threshold = 0.35;
+    if f32x3.x > threshold {
+        if f32x3.y > threshold {
+            return Some(Direction::SouthEast);
+        } else if f32x3.y < -threshold {
+            return Some(Direction::NorthEast);
+        } else {
+            return Some(Direction::East);
+        }
+    } else if f32x3.x > -threshold {
+        if f32x3.y > threshold {
+            return Some(Direction::South);
+        } else if f32x3.y < -threshold {
+            return Some(Direction::North);
+        } else {
+            return None;
+        }
+    } else {
+        if f32x3.y > threshold {
+            return Some(Direction::SouthWest);
+        } else if f32x3.y < -threshold {
+            return Some(Direction::NorthWest);
+        } else {
+            return Some(Direction::West);
         }
     }
 }
