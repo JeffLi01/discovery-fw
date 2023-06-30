@@ -100,9 +100,8 @@ impl Discovery {
             match mode {
                 0 => self.breath_led(Direction::North),
                 1 => self.breath_leds(),
-                2 => self.run_gyroscope(),
-                3 => self.run_accelerometer(),
-                4 => self.cycle_leds(),
+                2 => self.run_leveller(),
+                3 => self.cycle_leds(),
                 _ => BOARD_MODE.store(0, Ordering::Relaxed),
             }
         }
@@ -184,28 +183,7 @@ impl Discovery {
         }
     }
     
-    fn run_gyroscope(&mut self) {
-        let orig_mode = BOARD_MODE.load(Ordering::Relaxed);
-        let mut old_direction: Option<Direction> = None;
-        let threshold = 0.1;
-    
-        while BOARD_MODE.load(Ordering::Relaxed) == orig_mode {
-            let f32x3 = self.compass.accel_norm().unwrap();
-            if let Some(direction) = old_direction {
-                self.leds.for_direction(direction).off().ok();
-            }
-            let direction = calculate_direction(f32x3, threshold);
-            old_direction = direction;
-            match direction {
-                Some(d) => {
-                    self.leds.for_direction(d).on().ok();
-                },
-                None => {},
-            }
-        }
-    }
-
-    fn run_accelerometer(&mut self) {
+    fn run_leveller(&mut self) {
         let orig_mode = BOARD_MODE.load(Ordering::Relaxed);
         let mut old_direction: Option<Direction> = None;
         let threshold = 0.1;
