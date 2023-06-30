@@ -2,6 +2,7 @@
 #![no_main]
 
 use core::cell::RefCell;
+use core::f32::consts::PI;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 // pick a panicking behavior
@@ -186,7 +187,7 @@ impl Discovery {
     fn run_leveller(&mut self) {
         let orig_mode = BOARD_MODE.load(Ordering::Relaxed);
         let mut old_direction: Option<Direction> = None;
-        let threshold = 0.1;
+        let threshold = 0.2;
     
         while BOARD_MODE.load(Ordering::Relaxed) == orig_mode {
             let f32x3 = self.compass.accel_norm().unwrap();
@@ -205,32 +206,36 @@ impl Discovery {
     }    
 }
 
+///
+///               N(-y)
+///               ^
+///               |
+/// W(-x)   <-----+----->    E(+x)
+///               |
+///               v
+///               S(+y)
+/// 
 fn calculate_direction(f32x3: F32x3, threshold: f32) -> Option<Direction> {
-    if f32x3.x > threshold {
-        if f32x3.y > threshold {
-            return Some(Direction::SouthEast);
-        } else if f32x3.y < -threshold {
-            return Some(Direction::NorthEast);
-        } else {
-            return Some(Direction::East);
-        }
-    } else if f32x3.x > -threshold {
-        if f32x3.y > threshold {
-            return Some(Direction::South);
-        } else if f32x3.y < -threshold {
-            return Some(Direction::North);
-        } else {
-            return None;
-        }
-    } else {
-        if f32x3.y > threshold {
-            return Some(Direction::SouthWest);
-        } else if f32x3.y < -threshold {
-            return Some(Direction::NorthWest);
-        } else {
-            return Some(Direction::West);
-        }
+    let acc = f32x3.x * f32x3.x + f32x3.y * f32x3.y;
+    if acc < threshold * threshold {
+        return None;
     }
+    let acc = libm::sqrtf(acc);
+    let mut radians_by_pi = libm::acosf(f32x3.x / acc) / PI;
+    if f32x3.y > 0.0 {
+        radians_by_pi = -radians_by_pi;
+    }
+    let direction = match radians_by_pi {
+        _ if 5./8. < radians_by_pi && radians_by_pi <= 7./8. => Direction::NorthWest,
+        _ if 3./8. < radians_by_pi && radians_by_pi <= 5./8. => Direction::North,
+        _ if 1./8. < radians_by_pi && radians_by_pi <= 3./8. => Direction::NorthEast,
+        _ if -1./8. < radians_by_pi && radians_by_pi <= 1./8. => Direction::East,
+        _ if -3./8. < radians_by_pi && radians_by_pi <= -1./8. => Direction::SouthEast,
+        _ if -5./8. < radians_by_pi && radians_by_pi <= -3./8. => Direction::South,
+        _ if -7./8. < radians_by_pi && radians_by_pi <= -5./8. => Direction::SouthWest,
+        _ => Direction::West,
+    };
+    return Some(direction);
 }
 
 #[entry]
