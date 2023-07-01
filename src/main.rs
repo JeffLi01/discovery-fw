@@ -5,10 +5,6 @@ use core::cell::RefCell;
 use core::f32::consts::PI;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-// pick a panicking behavior
-// use panic_abort as _; // requires nightly
-// use panic_itm as _; // logs messages over ITM; requires ITM support
-// use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
 use panic_halt as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
 
 use cortex_m::delay::Delay;
@@ -16,15 +12,23 @@ use cortex_m::interrupt::Mutex;
 use cortex_m::Peripherals;
 use cortex_m_rt::entry;
 use cortex_m_semihosting::hprintln;
+use l3gd20::L3gd20;
+use lsm303dlhc::Lsm303dlhc;
 use stm32f3::stm32f303::{interrupt, Interrupt, NVIC};
-use stm32f3_discovery::accelerometer::Accelerometer;
-use stm32f3_discovery::accelerometer::vector::F32x3;
-use stm32f3_discovery::compass::Compass;
-use stm32f3_discovery::leds::{Direction, Leds};
-use stm32f3_discovery::stm32f3xx_hal::gpio::{Edge, Gpioa, Input, Pin, U};
-use stm32f3_discovery::stm32f3xx_hal::pac;
-use stm32f3_discovery::stm32f3xx_hal::prelude::*;
-use stm32f3_discovery::switch_hal::OutputSwitch;
+use accelerometer::vector::F32x3;
+use stm32f3xx_hal::gpio::{Edge, Gpioa, Input, Pin, U, Alternate, PushPull};
+use stm32f3xx_hal::i2c::I2c;
+use stm32f3xx_hal::pac;
+use stm32f3xx_hal::pac::SPI1;
+use stm32f3xx_hal::prelude::*;
+use stm32f3xx_hal::spi::Spi;
+use stm32f3xx_hal::spi;
+use stm32f3xx_hal::time::rate::Hertz;
+use switch_hal::OutputSwitch;
+
+mod board;
+
+use board::{Direction, Leds};
 
 static BOARD_MODE: AtomicU8 = AtomicU8::new(0);
 
@@ -33,24 +37,27 @@ static PA0: Mutex<RefCell<Option<Pin<Gpioa, U<0>, Input>>>> = Mutex::new(RefCell
 struct Discovery {
     delay: Delay,
     leds: Leds,
-    compass: Compass,
+    l3gd20: L3gd20<Spi<SPI1, (Pin<Gpioa, U<5>, Alternate<PushPull, 5>>, Pin<Gpioa, U<6>, Alternate<PushPull, 5>>, Pin<Gpioa, U<7>, Alternate<PushPull, 5>>)>, Pin<stm32f3xx_hal::gpio::Gpioe, U<3>, stm32f3xx_hal::gpio::Output<PushPull>>>,
+    lsm303dlhc: Lsm303dlhc<I2c<pac::I2C1, (Pin<stm32f3xx_hal::gpio::Gpiob, U<6>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>, Pin<stm32f3xx_hal::gpio::Gpiob, U<7>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>)>>,
 }
 
 impl Discovery {
     fn new() -> Self {
         let core_peripherals = Peripherals::take().unwrap();
+
+        let syst = core_peripherals.SYST;
+        let delay = Delay::new(syst, 8_000_000);
+
         let device_periph = pac::Peripherals::take().unwrap();
 
         let mut rcc = device_periph.RCC.constrain();
         let mut syscfg = device_periph.SYSCFG.constrain(&mut rcc.apb2);
 
-        let syst = core_peripherals.SYST;
-        let delay = Delay::new(syst, 8_000_000);
+        let mut gpioa = device_periph.GPIOA.split(&mut rcc.ahb);
+        let mut gpiob = device_periph.GPIOB.split(&mut rcc.ahb);
+        let mut gpioe = device_periph.GPIOE.split(&mut rcc.ahb);
 
-        let gpioe = device_periph.GPIOE.split(&mut rcc.ahb);
-        let mut moder = gpioe.moder;
-        let mut otyper = gpioe.otyper;
-        let leds = stm32f3_discovery::leds::Leds::new(
+        let leds = Leds::new(
             gpioe.pe8,
             gpioe.pe9,
             gpioe.pe10,
@@ -59,36 +66,35 @@ impl Discovery {
             gpioe.pe13,
             gpioe.pe14,
             gpioe.pe15,
-            &mut moder,
-            &mut otyper,
+            &mut gpioe.moder,
+            &mut gpioe.otyper,
         );
 
-        let mut gpioa = device_periph.GPIOA.split(&mut rcc.ahb);
         let mut exti = device_periph.EXTI;
         let mut pa0 = gpioa.pa0.into_input(&mut gpioa.moder);
         pa0.trigger_on_edge(&mut exti, Edge::Rising);
-        pa0.make_interrupt_source(&mut syscfg);
+        syscfg.select_exti_interrupt_source(&pa0);
         pa0.enable_interrupt(&mut exti);
 
         cortex_m::interrupt::free(|cs| PA0.borrow(cs).replace(Some(pa0)));
 
-        let mut gpiob = device_periph.GPIOB.split(&mut rcc.ahb);
         let mut flash = device_periph.FLASH.constrain();
         let clocks = rcc.cfgr.freeze(&mut flash.acr);
     
-        let compass = Compass::new(
-            gpiob.pb6,
-            gpiob.pb7,
-            &mut gpiob.moder,
-            &mut gpiob.otyper,
-            &mut gpiob.afrl,
-            device_periph.I2C1,
-            clocks,
-            &mut rcc.apb1,
-        )
-        .unwrap();
-    
-        Discovery { delay, leds, compass }
+        let sck_pin = gpioa.pa5.into_af_push_pull::<5>(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
+        let mosi_pin = gpioa.pa6.into_af_push_pull::<5>(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
+        let miso_pin = gpioa.pa7.into_af_push_pull::<5>(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
+        let config = spi::config::Config::default();
+        let spi: Spi<SPI1, (Pin<Gpioa, U<5>, Alternate<PushPull, 5>>, Pin<Gpioa, U<6>, Alternate<PushPull, 5>>, Pin<Gpioa, U<7>, Alternate<PushPull, 5>>), u8> = Spi::new(device_periph.SPI1, (sck_pin, mosi_pin, miso_pin), config, clocks, &mut rcc.apb2);
+        let cs = gpioe.pe3.into_push_pull_output(&mut gpioe.moder, &mut gpioe.otyper);
+        let l3gd20 = L3gd20::new(spi, cs).unwrap();
+
+        let scl_pin = gpiob.pb6.into_af_open_drain::<4>(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
+        let sda_pin = gpiob.pb7.into_af_open_drain::<4>(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
+        let i2c: I2c<pac::I2C1, (Pin<stm32f3xx_hal::gpio::Gpiob, U<6>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>, Pin<stm32f3xx_hal::gpio::Gpiob, U<7>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>)> = I2c::new(device_periph.I2C1, (scl_pin, sda_pin), Hertz::new(400_000), clocks,  &mut rcc.apb1);
+        let lsm303dlhc = Lsm303dlhc::new(i2c).unwrap();
+
+        Discovery { delay, l3gd20, leds, lsm303dlhc }
     }
 
     fn mainloop(&mut self) -> ! {
@@ -103,6 +109,7 @@ impl Discovery {
                 1 => self.breath_leds(),
                 2 => self.run_leveller(),
                 3 => self.cycle_leds(),
+                4 => self.run_gyroscope(),
                 _ => BOARD_MODE.store(0, Ordering::Relaxed),
             }
         }
@@ -190,10 +197,11 @@ impl Discovery {
         let threshold = 0.2;
     
         while BOARD_MODE.load(Ordering::Relaxed) == orig_mode {
-            let f32x3 = self.compass.accel_norm().unwrap();
+            let i16x3 = self.lsm303dlhc.accel().unwrap();
             if let Some(direction) = old_direction {
                 self.leds.for_direction(direction).off().ok();
             }
+            let f32x3 = F32x3::new(i16x3.x as f32, i16x3.y as f32, i16x3.z as f32,);
             let direction = calculate_direction(f32x3, threshold);
             old_direction = direction;
             match direction {
@@ -203,7 +211,15 @@ impl Discovery {
                 None => {},
             }
         }
-    }    
+    }
+
+    fn run_gyroscope(&mut self) {
+        let orig_mode = BOARD_MODE.load(Ordering::Relaxed);
+    
+        while BOARD_MODE.load(Ordering::Relaxed) == orig_mode {
+            hprintln!("{:?}", self.l3gd20.gyro().unwrap()).unwrap();
+        }
+    }
 }
 
 ///
@@ -240,6 +256,7 @@ fn calculate_direction(f32x3: F32x3, threshold: f32) -> Option<Direction> {
 
 #[entry]
 fn main() -> ! {
+    hprintln!("hello world").unwrap();
     let mut discovery = Discovery::new();
 
     discovery.mainloop();
@@ -249,7 +266,7 @@ fn main() -> ! {
 fn EXTI0() {
     cortex_m::interrupt::free(|cs| {
         if let Some(pa0) = (*PA0.borrow(cs).borrow_mut()).as_mut() {
-            pa0.clear_interrupt_pending_bit();
+            pa0.clear_interrupt();
         }
         BOARD_MODE.fetch_add(1, Ordering::Relaxed);
     });
