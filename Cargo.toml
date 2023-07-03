@@ -15,7 +15,6 @@ l3gd20 = "0.3.0"
 libm = "0.2.7"
 lsm303dlhc = "0.2.0"
 panic-halt = "0.2.0"
-stm32f3 = { version = "0.15.1", features = ["stm32f303", "cortex-m-rt"] }
 stm32f3xx-hal = { version = "0.9.2", features = ["stm32f303xc"] }
 switch-hal = "0.4.0"
 
