@@ -1,12 +1,10 @@
 #![no_std]
 #![no_main]
 
+use accelerometer::vector::F32x3;
 use core::cell::RefCell;
 use core::f32::consts::PI;
 use core::sync::atomic::{AtomicU8, Ordering};
-
-use panic_halt as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
-
 use cortex_m::delay::Delay;
 use cortex_m::interrupt::Mutex;
 use cortex_m::Peripherals;
@@ -14,13 +12,13 @@ use cortex_m_rt::entry;
 use cortex_m_semihosting::hprintln;
 use l3gd20::L3gd20;
 use lsm303dlhc::Lsm303dlhc;
-use accelerometer::vector::F32x3;
-use stm32f3xx_hal::gpio::{Edge, Gpioa, Input, Pin, U, Alternate, PushPull};
+use panic_halt as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
+use stm32f3xx_hal::gpio::{Alternate, Edge, Gpioa, Input, Pin, PushPull, U};
 use stm32f3xx_hal::i2c::I2c;
 use stm32f3xx_hal::pac::{self, interrupt, Interrupt, NVIC, SPI1};
 use stm32f3xx_hal::prelude::*;
-use stm32f3xx_hal::spi::Spi;
 use stm32f3xx_hal::spi;
+use stm32f3xx_hal::spi::Spi;
 use stm32f3xx_hal::time::rate::Hertz;
 use switch_hal::OutputSwitch;
 
@@ -35,8 +33,26 @@ static PA0: Mutex<RefCell<Option<Pin<Gpioa, U<0>, Input>>>> = Mutex::new(RefCell
 struct Discovery {
     delay: Delay,
     leds: Leds,
-    l3gd20: L3gd20<Spi<SPI1, (Pin<Gpioa, U<5>, Alternate<PushPull, 5>>, Pin<Gpioa, U<6>, Alternate<PushPull, 5>>, Pin<Gpioa, U<7>, Alternate<PushPull, 5>>)>, Pin<stm32f3xx_hal::gpio::Gpioe, U<3>, stm32f3xx_hal::gpio::Output<PushPull>>>,
-    lsm303dlhc: Lsm303dlhc<I2c<pac::I2C1, (Pin<stm32f3xx_hal::gpio::Gpiob, U<6>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>, Pin<stm32f3xx_hal::gpio::Gpiob, U<7>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>)>>,
+    l3gd20: L3gd20<
+        Spi<
+            SPI1,
+            (
+                Pin<Gpioa, U<5>, Alternate<PushPull, 5>>,
+                Pin<Gpioa, U<6>, Alternate<PushPull, 5>>,
+                Pin<Gpioa, U<7>, Alternate<PushPull, 5>>,
+            ),
+        >,
+        Pin<stm32f3xx_hal::gpio::Gpioe, U<3>, stm32f3xx_hal::gpio::Output<PushPull>>,
+    >,
+    lsm303dlhc: Lsm303dlhc<
+        I2c<
+            pac::I2C1,
+            (
+                Pin<stm32f3xx_hal::gpio::Gpiob, U<6>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>,
+                Pin<stm32f3xx_hal::gpio::Gpiob, U<7>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>,
+            ),
+        >,
+    >,
 }
 
 impl Discovery {
@@ -78,21 +94,69 @@ impl Discovery {
 
         let mut flash = device_periph.FLASH.constrain();
         let clocks = rcc.cfgr.freeze(&mut flash.acr);
-    
-        let sck_pin = gpioa.pa5.into_af_push_pull::<5>(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
-        let mosi_pin = gpioa.pa6.into_af_push_pull::<5>(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
-        let miso_pin = gpioa.pa7.into_af_push_pull::<5>(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
+
+        let sck_pin =
+            gpioa
+                .pa5
+                .into_af_push_pull::<5>(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
+        let mosi_pin =
+            gpioa
+                .pa6
+                .into_af_push_pull::<5>(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
+        let miso_pin =
+            gpioa
+                .pa7
+                .into_af_push_pull::<5>(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
         let config = spi::config::Config::default();
-        let spi: Spi<SPI1, (Pin<Gpioa, U<5>, Alternate<PushPull, 5>>, Pin<Gpioa, U<6>, Alternate<PushPull, 5>>, Pin<Gpioa, U<7>, Alternate<PushPull, 5>>), u8> = Spi::new(device_periph.SPI1, (sck_pin, mosi_pin, miso_pin), config, clocks, &mut rcc.apb2);
-        let cs = gpioe.pe3.into_push_pull_output(&mut gpioe.moder, &mut gpioe.otyper);
+        let spi: Spi<
+            SPI1,
+            (
+                Pin<Gpioa, U<5>, Alternate<PushPull, 5>>,
+                Pin<Gpioa, U<6>, Alternate<PushPull, 5>>,
+                Pin<Gpioa, U<7>, Alternate<PushPull, 5>>,
+            ),
+            u8,
+        > = Spi::new(
+            device_periph.SPI1,
+            (sck_pin, mosi_pin, miso_pin),
+            config,
+            clocks,
+            &mut rcc.apb2,
+        );
+        let cs = gpioe
+            .pe3
+            .into_push_pull_output(&mut gpioe.moder, &mut gpioe.otyper);
         let l3gd20 = L3gd20::new(spi, cs).unwrap();
 
-        let scl_pin = gpiob.pb6.into_af_open_drain::<4>(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
-        let sda_pin = gpiob.pb7.into_af_open_drain::<4>(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
-        let i2c: I2c<pac::I2C1, (Pin<stm32f3xx_hal::gpio::Gpiob, U<6>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>, Pin<stm32f3xx_hal::gpio::Gpiob, U<7>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>)> = I2c::new(device_periph.I2C1, (scl_pin, sda_pin), Hertz::new(400_000), clocks,  &mut rcc.apb1);
+        let scl_pin =
+            gpiob
+                .pb6
+                .into_af_open_drain::<4>(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
+        let sda_pin =
+            gpiob
+                .pb7
+                .into_af_open_drain::<4>(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
+        let i2c: I2c<
+            pac::I2C1,
+            (
+                Pin<stm32f3xx_hal::gpio::Gpiob, U<6>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>,
+                Pin<stm32f3xx_hal::gpio::Gpiob, U<7>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>,
+            ),
+        > = I2c::new(
+            device_periph.I2C1,
+            (scl_pin, sda_pin),
+            Hertz::new(400_000),
+            clocks,
+            &mut rcc.apb1,
+        );
         let lsm303dlhc = Lsm303dlhc::new(i2c).unwrap();
 
-        Discovery { delay, l3gd20, leds, lsm303dlhc }
+        Discovery {
+            delay,
+            l3gd20,
+            leds,
+            lsm303dlhc,
+        }
     }
 
     fn mainloop(&mut self) -> ! {
@@ -179,7 +243,7 @@ impl Discovery {
             Direction::SouthWest,
             Direction::West,
             Direction::NorthWest,
-            ];
+        ];
         while BOARD_MODE.load(Ordering::Relaxed) == orig_mode {
             self.leds.for_direction(directions[index]).on().ok();
             self.delay.delay_ms(1000);
@@ -188,32 +252,32 @@ impl Discovery {
             index %= directions.len();
         }
     }
-    
+
     fn run_leveller(&mut self) {
         let orig_mode = BOARD_MODE.load(Ordering::Relaxed);
         let mut old_direction: Option<Direction> = None;
         let threshold = 0.2;
-    
+
         while BOARD_MODE.load(Ordering::Relaxed) == orig_mode {
             let i16x3 = self.lsm303dlhc.accel().unwrap();
             if let Some(direction) = old_direction {
                 self.leds.for_direction(direction).off().ok();
             }
-            let f32x3 = F32x3::new(i16x3.x as f32, i16x3.y as f32, i16x3.z as f32,);
+            let f32x3 = F32x3::new(i16x3.x as f32, i16x3.y as f32, i16x3.z as f32);
             let direction = calculate_direction(f32x3, threshold);
             old_direction = direction;
             match direction {
                 Some(d) => {
                     self.leds.for_direction(d).on().ok();
-                },
-                None => {},
+                }
+                None => {}
             }
         }
     }
 
     fn run_gyroscope(&mut self) {
         let orig_mode = BOARD_MODE.load(Ordering::Relaxed);
-    
+
         while BOARD_MODE.load(Ordering::Relaxed) == orig_mode {
             hprintln!("{:?}", self.l3gd20.gyro().unwrap()).unwrap();
         }
@@ -228,7 +292,7 @@ impl Discovery {
 ///               |
 ///               v
 ///               S(+y)
-/// 
+///
 fn calculate_direction(f32x3: F32x3, threshold: f32) -> Option<Direction> {
     let acc = f32x3.x * f32x3.x + f32x3.y * f32x3.y;
     if acc < threshold * threshold {
@@ -240,13 +304,13 @@ fn calculate_direction(f32x3: F32x3, threshold: f32) -> Option<Direction> {
         radians_by_pi = -radians_by_pi;
     }
     let direction = match radians_by_pi {
-        _ if 5./8. < radians_by_pi && radians_by_pi <= 7./8. => Direction::NorthWest,
-        _ if 3./8. < radians_by_pi && radians_by_pi <= 5./8. => Direction::North,
-        _ if 1./8. < radians_by_pi && radians_by_pi <= 3./8. => Direction::NorthEast,
-        _ if -1./8. < radians_by_pi && radians_by_pi <= 1./8. => Direction::East,
-        _ if -3./8. < radians_by_pi && radians_by_pi <= -1./8. => Direction::SouthEast,
-        _ if -5./8. < radians_by_pi && radians_by_pi <= -3./8. => Direction::South,
-        _ if -7./8. < radians_by_pi && radians_by_pi <= -5./8. => Direction::SouthWest,
+        _ if 5. / 8. < radians_by_pi && radians_by_pi <= 7. / 8. => Direction::NorthWest,
+        _ if 3. / 8. < radians_by_pi && radians_by_pi <= 5. / 8. => Direction::North,
+        _ if 1. / 8. < radians_by_pi && radians_by_pi <= 3. / 8. => Direction::NorthEast,
+        _ if -1. / 8. < radians_by_pi && radians_by_pi <= 1. / 8. => Direction::East,
+        _ if -3. / 8. < radians_by_pi && radians_by_pi <= -1. / 8. => Direction::SouthEast,
+        _ if -5. / 8. < radians_by_pi && radians_by_pi <= -3. / 8. => Direction::South,
+        _ if -7. / 8. < radians_by_pi && radians_by_pi <= -5. / 8. => Direction::SouthWest,
         _ => Direction::West,
     };
     return Some(direction);
