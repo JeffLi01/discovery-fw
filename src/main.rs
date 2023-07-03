@@ -9,6 +9,7 @@ use cortex_m::delay::Delay;
 use cortex_m::interrupt::Mutex;
 use cortex_m::Peripherals;
 use cortex_m_rt::entry;
+#[cfg(debug_assertions)]
 use cortex_m_semihosting::hprintln;
 use l3gd20::L3gd20;
 use lsm303dlhc::Lsm303dlhc;
@@ -165,6 +166,7 @@ impl Discovery {
         }
         loop {
             let mode = BOARD_MODE.load(Ordering::Relaxed);
+            #[cfg(debug_assertions)]
             hprintln!("Mode {}", mode).unwrap();
             match mode {
                 0 => self.breath_led(Direction::North),
@@ -279,7 +281,9 @@ impl Discovery {
         let orig_mode = BOARD_MODE.load(Ordering::Relaxed);
 
         while BOARD_MODE.load(Ordering::Relaxed) == orig_mode {
-            hprintln!("{:?}", self.l3gd20.gyro().unwrap()).unwrap();
+            let _i16x3 = self.l3gd20.gyro().unwrap();
+            #[cfg(debug_assertions)]
+            hprintln!("{:?}", _i16x3).unwrap();
         }
     }
 }
@@ -318,7 +322,6 @@ fn calculate_direction(f32x3: F32x3, threshold: f32) -> Option<Direction> {
 
 #[entry]
 fn main() -> ! {
-    hprintln!("hello world").unwrap();
     let mut discovery = Discovery::new();
 
     discovery.mainloop();
