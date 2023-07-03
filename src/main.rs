@@ -14,7 +14,9 @@ use cortex_m_semihosting::hprintln;
 use l3gd20::L3gd20;
 use lsm303dlhc::Lsm303dlhc;
 use panic_halt as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
-use stm32f3xx_hal::gpio::{Alternate, Edge, Gpioa, Input, Pin, PushPull, U};
+use stm32f3xx_hal::gpio::{
+    Alternate, Edge, Gpioa, Gpiob, Gpioe, Input, OpenDrain, Output, Pin, PushPull, U,
+};
 use stm32f3xx_hal::i2c::I2c;
 use stm32f3xx_hal::pac::{self, interrupt, Interrupt, NVIC, SPI1};
 use stm32f3xx_hal::prelude::*;
@@ -31,29 +33,33 @@ static BOARD_MODE: AtomicU8 = AtomicU8::new(0);
 
 static PA0: Mutex<RefCell<Option<Pin<Gpioa, U<0>, Input>>>> = Mutex::new(RefCell::new(None));
 
+type L3gd20Alias = L3gd20<
+    Spi<
+        SPI1,
+        (
+            Pin<Gpioa, U<5>, Alternate<PushPull, 5>>,
+            Pin<Gpioa, U<6>, Alternate<PushPull, 5>>,
+            Pin<Gpioa, U<7>, Alternate<PushPull, 5>>,
+        ),
+    >,
+    Pin<Gpioe, U<3>, Output<PushPull>>,
+>;
+
+type Lsm303dlhcAlias = Lsm303dlhc<
+    I2c<
+        pac::I2C1,
+        (
+            Pin<Gpiob, U<6>, Alternate<OpenDrain, 4>>,
+            Pin<Gpiob, U<7>, Alternate<OpenDrain, 4>>,
+        ),
+    >,
+>;
+
 struct Discovery {
     delay: Delay,
     leds: Leds,
-    l3gd20: L3gd20<
-        Spi<
-            SPI1,
-            (
-                Pin<Gpioa, U<5>, Alternate<PushPull, 5>>,
-                Pin<Gpioa, U<6>, Alternate<PushPull, 5>>,
-                Pin<Gpioa, U<7>, Alternate<PushPull, 5>>,
-            ),
-        >,
-        Pin<stm32f3xx_hal::gpio::Gpioe, U<3>, stm32f3xx_hal::gpio::Output<PushPull>>,
-    >,
-    lsm303dlhc: Lsm303dlhc<
-        I2c<
-            pac::I2C1,
-            (
-                Pin<stm32f3xx_hal::gpio::Gpiob, U<6>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>,
-                Pin<stm32f3xx_hal::gpio::Gpiob, U<7>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>,
-            ),
-        >,
-    >,
+    l3gd20: L3gd20Alias,
+    lsm303dlhc: Lsm303dlhcAlias,
 }
 
 impl Discovery {
@@ -109,15 +115,7 @@ impl Discovery {
                 .pa7
                 .into_af_push_pull::<5>(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
         let config = spi::config::Config::default();
-        let spi: Spi<
-            SPI1,
-            (
-                Pin<Gpioa, U<5>, Alternate<PushPull, 5>>,
-                Pin<Gpioa, U<6>, Alternate<PushPull, 5>>,
-                Pin<Gpioa, U<7>, Alternate<PushPull, 5>>,
-            ),
-            u8,
-        > = Spi::new(
+        let spi = Spi::new(
             device_periph.SPI1,
             (sck_pin, mosi_pin, miso_pin),
             config,
@@ -137,13 +135,7 @@ impl Discovery {
             gpiob
                 .pb7
                 .into_af_open_drain::<4>(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
-        let i2c: I2c<
-            pac::I2C1,
-            (
-                Pin<stm32f3xx_hal::gpio::Gpiob, U<6>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>,
-                Pin<stm32f3xx_hal::gpio::Gpiob, U<7>, Alternate<stm32f3xx_hal::gpio::OpenDrain, 4>>,
-            ),
-        > = I2c::new(
+        let i2c = I2c::new(
             device_periph.I2C1,
             (scl_pin, sda_pin),
             Hertz::new(400_000),
@@ -268,11 +260,8 @@ impl Discovery {
             let f32x3 = F32x3::new(i16x3.x as f32, i16x3.y as f32, i16x3.z as f32);
             let direction = calculate_direction(f32x3, threshold);
             old_direction = direction;
-            match direction {
-                Some(d) => {
-                    self.leds.for_direction(d).on().ok();
-                }
-                None => {}
+            if let Some(d) = direction {
+                self.leds.for_direction(d).on().ok();
             }
         }
     }
@@ -317,7 +306,7 @@ fn calculate_direction(f32x3: F32x3, threshold: f32) -> Option<Direction> {
         _ if -7. / 8. < radians_by_pi && radians_by_pi <= -5. / 8. => Direction::SouthWest,
         _ => Direction::West,
     };
-    return Some(direction);
+    Some(direction)
 }
 
 #[entry]
